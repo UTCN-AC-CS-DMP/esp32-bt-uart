@@ -1,43 +1,26 @@
 /*
-    Video: https://www.youtube.com/watch?v=oCMOYS71NIU
-    Based on Neil Kolban example for IDF: https://github.com/nkolban/esp32-snippets/blob/master/cpp_utils/tests/BLE%20Tests/SampleNotify.cpp
-    Ported to Arduino ESP32 by Evandro Copercini
-
-   Create a BLE server that, once we receive a connection, will send periodic notifications.
-   The service advertises itself as: 6E400001-B5A3-F393-E0A9-E50E24DCCA9E
-   Has a characteristic of: 6E400002-B5A3-F393-E0A9-E50E24DCCA9E - used for receiving data with "WRITE" 
-   Has a characteristic of: 6E400003-B5A3-F393-E0A9-E50E24DCCA9E - used to send data with "NOTIFY"
-
-   The design of creating the BLE server is:
-   1. Create a BLE Server
-   2. Create a BLE Service
-   3. Create a BLE Characteristic on the Service
-   4. Create a BLE Descriptor on the characteristic
-   5. Start the service.
-   6. Start advertising.
-
-   In this example rxValue is the data received (only accessible inside that function).
-   And txValue is the data to be sent, in this example just a byte incremented every second. 
-*/
+ * Based on ESP32 BLE UART example
+ * https://github.com/espressif/arduino-esp32/tree/master/libraries/BLE/examples/BLE_uart
+ */
+#include <BLE2902.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
-#include <BLE2902.h>
+
+// NOTE: Leave these default values for Nordic nRF chip, so that the
+//       terminal emulator on cellphones won't have to be configured
+#define SERVICE_UUID "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
+#define NNRF_RX_UUID "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
+#define NNRF_TX_UUID "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
+
+// Change this to something unique
+const String BLE_NETWORK_NAME = "DMP BLE Device";
 
 BLEServer *pServer = NULL;
 BLECharacteristic *pTxCharacteristic;
 bool deviceConnected = false;
 bool oldDeviceConnected = false;
 uint8_t txValue = 0;
-
-// See the following for generating UUIDs:
-// https://www.uuidgenerator.net/
-
-#define SERVICE_UUID "7B0858E9-E8A1-470A-8816-C7E4A2A4FC34"  // UART service UUID
-#define CHARACTERISTIC_UUID_RX "2EC2D95D-6685-45C8-8C0F-0F8C4AD2C444"
-#define CHARACTERISTIC_UUID_TX "E754DA09-141B-4E58-9816-9E98DA9233FE"
-
-const String BLE_NETWORK_NAME = "DMP BLE Device";
 
 class MyServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer *pServer) {
@@ -50,15 +33,15 @@ class MyServerCallbacks : public BLEServerCallbacks {
 };
 
 class MyCallbacks : public BLECharacteristicCallbacks {
-  void onWrite(BLECharacteristic *pCharacteristic) {
-    std::string rxValue = pCharacteristic->getValue();
+  void onWrite(BLECharacteristic *pCharacteristic, esp_ble_gatts_cb_param_t *param) {
+    const std::string rxValue = pCharacteristic->getValue();
     if (rxValue.length() > 0) {
       Serial.print("XX | RECV: ");
-      Serial.print(rxValue.c_str());
+      if (rxValue.back() == '\n') Serial.print(rxValue.c_str());
+      else Serial.println(rxValue.c_str());
     }
   }
 };
-
 
 void setup() {
   Serial.begin(115200);
@@ -73,15 +56,15 @@ void setup() {
   // Create the BLE Service
   BLEService *pService = pServer->createService(SERVICE_UUID);
 
-  // Create a BLE Characteristic
+  // Init / create a BLE Characteristics
   pTxCharacteristic = pService->createCharacteristic(
-    CHARACTERISTIC_UUID_TX,
+    NNRF_TX_UUID,
     BLECharacteristic::PROPERTY_NOTIFY);
 
   pTxCharacteristic->addDescriptor(new BLE2902());
 
   BLECharacteristic *pRxCharacteristic = pService->createCharacteristic(
-    CHARACTERISTIC_UUID_RX,
+    NNRF_RX_UUID,
     BLECharacteristic::PROPERTY_WRITE);
 
   pRxCharacteristic->setCallbacks(new MyCallbacks());
@@ -89,39 +72,51 @@ void setup() {
   // Start the service
   pService->start();
 
-  // Start advertising
-  pServer->getAdvertising()->start();
-  Serial.println("Waiting a client connection to notify...");
+  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+  pAdvertising->addServiceUUID(SERVICE_UUID);
+  pAdvertising->setScanResponse(true);
+  pAdvertising->setMinPreferred(0x06);  // functions that help with iPhone connections issue
+  pAdvertising->setMinPreferred(0x12);
+  BLEDevice::startAdvertising();
+  printIntro();
 }
 
 void loop() {
 
-  if (deviceConnected) {
-    /* pTxCharacteristic->setValue(&txValue, 1);
-    pTxCharacteristic->notify();
-    txValue++;
-    delay(10);  // bluetooth stack will go into congestion, if too many packets are sent */
-    if (Serial.available()) {
-      const String LINE_READ = Serial.readString();
-      if (LINE_READ.length() > 0) {
-        uint8_t *C_BASED_STR = (uint8_t*)LINE_READ.c_str();
-        pTxCharacteristic->setValue(C_BASED_STR, LINE_READ.length());
-        pTxCharacteristic->notify();
-        Serial.print(String("YY | SENT: ") + LINE_READ);
-      }
-    }
+  if (deviceConnected && Serial.available()) {
+    sendMessage();
   }
 
   // disconnecting
   if (!deviceConnected && oldDeviceConnected) {
-    delay(500);                   // give the bluetooth stack the chance to get things ready
-    pServer->startAdvertising();  // restart advertising
-    Serial.println("start advertising");
+    delay(500);                     // give the bluetooth stack the chance to get things ready
+    BLEDevice::startAdvertising();  // restart advertising
+    Serial.println("INFO: Client disconnected, restarted advertising!");
     oldDeviceConnected = deviceConnected;
   }
+
   // connecting
   if (deviceConnected && !oldDeviceConnected) {
-    // do stuff here on connecting
+    Serial.println("INFO: New device connected!");
     oldDeviceConnected = deviceConnected;
   }
+}
+
+void sendMessage() {
+  const String LINE_READ = Serial.readString();
+  if (LINE_READ.length() > 0) {
+    uint8_t *C_BASED_STR = (uint8_t *)LINE_READ.c_str();
+    pTxCharacteristic->setValue(C_BASED_STR, LINE_READ.length());
+    pTxCharacteristic->notify();
+    Serial.print(String("YY | SENT: ") + LINE_READ);
+  }
+}
+
+void printIntro() {
+  Serial.println("-------------------------------------");
+  Serial.println("| DMP BLE UART App started on ESP32 |");
+  Serial.println("| _________________________________ |");
+  Serial.println("| connect to it using a device that |");
+  Serial.println("| supports BLE (Bluetooth ver 4.0+) |");
+  Serial.println("-------------------------------------");
 }
