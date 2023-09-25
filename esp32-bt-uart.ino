@@ -103,12 +103,11 @@ void loop() {
 }
 
 void sendMessage() {
-  const String LINE_READ = Serial.readString();
-  if (LINE_READ.length() > 0) {
-    uint8_t *C_BASED_STR = (uint8_t *)LINE_READ.c_str();
-    pTxCharacteristic->setValue(C_BASED_STR, LINE_READ.length());
+  const String currLine = Serial.readString();
+  if (currLine.length() > 0) {
+    pTxCharacteristic->setValue((uint8_t *)currLine.c_str(), currLine.length());
     pTxCharacteristic->notify();
-    Serial.print(String("YY | SENT: ") + LINE_READ);
+    Serial.print(String("YY | SENT: ") + currLine);
   }
 }
 
